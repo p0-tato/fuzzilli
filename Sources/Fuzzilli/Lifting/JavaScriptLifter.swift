@@ -50,6 +50,8 @@ public class JavaScriptLifter: Lifter {
     }
     private var forLoopHeaderStack = Stack<ForLoopHeader>()
 
+    private var actualLoopDepth = 0
+
     // Stack for object literals.
     private var objectLiteralStack = Stack<ObjectLiteralWriter>()
     private var currentObjectLiteral: ObjectLiteralWriter {
@@ -1150,24 +1152,34 @@ public class JavaScriptLifter: Lifter {
 
             case .beginWhileLoopBody:
                 let COND = handleEndSingleExpressionContext(result: input(0), with: &w)
+                actualLoopDepth += 1
+                w.recordLoopPos()
                 w.emitBlock("while (\(COND)) {")
                 w.enterNewBlock()
 
             case .endWhileLoop:
                 w.leaveCurrentBlock()
                 w.emit("}")
+                actualLoopDepth -= 1
+                w.popLoopPos()
 
             case .beginDoWhileLoopBody:
+                actualLoopDepth += 1
+                w.recordLoopPos()
                 w.emit("do {")
                 w.enterNewBlock()
 
             case .beginDoWhileLoopHeader:
+                actualLoopDepth += 1
+                w.recordLoopPos()
                 w.leaveCurrentBlock()
                 handleBeginSingleExpressionContext(with: &w, initialIndentionLevel: 2)
 
             case .endDoWhileLoop:
                 let COND = handleEndSingleExpressionContext(result: input(0), with: &w)
                 w.emitBlock("} while (\(COND))")
+                actualLoopDepth -= 1
+                w.popLoopPos()
 
             case .beginForLoopInitializer:
                 // While we could inline into the loop header, we probably don't want to do that as it will often lead
@@ -1244,6 +1256,8 @@ public class JavaScriptLifter: Lifter {
                 var CONDITION = header.condition
                 var AFTERTHOUGHT = handleEndSingleExpressionContext(with: &w)
 
+                actualLoopDepth += 1
+                w.recordLoopPos()
                 if !INITIALIZER.contains("\n") && !CONDITION.contains("\n") && !AFTERTHOUGHT.contains("\n") {
                     if !CONDITION.isEmpty { CONDITION = " " + CONDITION }
                     if !AFTERTHOUGHT.isEmpty { AFTERTHOUGHT = " " + AFTERTHOUGHT }
@@ -1262,22 +1276,30 @@ public class JavaScriptLifter: Lifter {
             case .endForLoop:
                 w.leaveCurrentBlock()
                 w.emit("}")
+                actualLoopDepth -= 1
+                w.popLoopPos()
 
             case .beginForInLoop:
                 let LET = w.declarationKeyword(for: instr.innerOutput)
                 let V = w.declare(instr.innerOutput)
                 let OBJ = input(0)
+                actualLoopDepth += 1
+                w.recordLoopPos()
                 w.emit("for (\(LET) \(V) in \(OBJ)) {")
                 w.enterNewBlock()
 
             case .endForInLoop:
                 w.leaveCurrentBlock()
                 w.emit("}")
+                actualLoopDepth -= 1
+                w.popLoopPos()
 
             case .beginForOfLoop:
                 let V = w.declare(instr.innerOutput)
                 let LET = w.declarationKeyword(for: instr.innerOutput)
                 let OBJ = input(0)
+                actualLoopDepth += 1
+                w.recordLoopPos()
                 w.emit("for (\(LET) \(V) of \(OBJ)) {")
                 w.enterNewBlock()
 
@@ -1286,12 +1308,16 @@ public class JavaScriptLifter: Lifter {
                 let PATTERN = liftArrayDestructPattern(indices: op.indices, outputs: outputs, hasRestElement: op.hasRestElement)
                 let LET = w.varKeyword
                 let OBJ = input(0)
+                actualLoopDepth += 1
+                w.recordLoopPos()
                 w.emit("for (\(LET) [\(PATTERN)] of \(OBJ)) {")
                 w.enterNewBlock()
 
             case .endForOfLoop:
                 w.leaveCurrentBlock()
                 w.emit("}")
+                actualLoopDepth -= 1
+                w.popLoopPos()
 
             case .beginRepeatLoop(let op):
                 let LET = w.varKeyword
@@ -1302,12 +1328,16 @@ public class JavaScriptLifter: Lifter {
                     I = "i"
                 }
                 let ITERATIONS = op.iterations
+                actualLoopDepth += 1
+                w.recordLoopPos()
                 w.emit("for (\(LET) \(I) = 0; \(I) < \(ITERATIONS); \(I)++) {")
                 w.enterNewBlock()
 
             case .endRepeatLoop:
                 w.leaveCurrentBlock()
                 w.emit("}")
+                actualLoopDepth -= 1
+                w.popLoopPos()
 
             case .loopBreak(_),
                  .switchBreak:
@@ -1315,6 +1345,32 @@ public class JavaScriptLifter: Lifter {
 
             case .loopContinue:
                 w.emit("continue;")
+
+            case .loopBreakNested(let op):
+                let expectedDepth = op.depth
+                let d = expectedDepth % actualLoopDepth
+                let pos = w.getLoopPos(d)
+                let pre = String(repeating: " ", count: 4 * d)
+                let s = pre + "label" + String(d) + ":\n"
+                if(!w.getLabelExist(d)){
+                    w.insertLabel(pos, s)
+                    w.setLabelExist(d)
+                    w.updateLoopPos(d + 1, s.length)
+                }
+                w.emit("break " + "label" + String(d) + ";")
+
+            case .loopContinueNested(let op):
+                let expectedDepth = op.depth
+                let d = expectedDepth % actualLoopDepth
+                let pos = w.getLoopPos(d)
+                let pre = String(repeating: " ", count: 4 * d)
+                let s = pre + "label" + String(d) + ":\n"
+                if(!w.getLabelExist(d)){
+                    w.insertLabel(pos, s)
+                    w.setLabelExist(d)
+                    w.updateLoopPos(d + 1, s.length)
+                }
+                w.emit("continue " + "label" + String(d) + ";")
 
             case .beginTry:
                 w.emit("try {")
@@ -1846,6 +1902,12 @@ public class JavaScriptLifter: Lifter {
             return writer.code
         }
 
+        struct LoopPosInfo {
+            var loopBeginPos: Int
+            var exist: Bool
+        }
+        private var loopPos: [LoopPosInfo]
+
         // Maps each FuzzIL variable to its JavaScript expression.
         // The expression for a FuzzIL variable can generally either be
         //  * an identifier like "v42" if the FuzzIL variable is mapped to a JavaScript variable OR
@@ -1866,6 +1928,7 @@ public class JavaScriptLifter: Lifter {
             self.analyzer = analyzer
             self.varKeyword = version == .es6 ? "let" : "var"
             self.constKeyword = version == .es6 ? "const" : "var"
+            self.loopPos = []
         }
 
         /// Assign a JavaScript expression to a FuzzIL variable.
@@ -2101,6 +2164,43 @@ public class JavaScriptLifter: Lifter {
         mutating func emit(_ line: String) {
             emitPendingExpressions()
             writer.emit(line)
+        }
+
+        mutating func recordLoopPos(){
+            loopPos.append(LoopPosInfo(loopBeginPos: writer.code.count, exist: false ))
+        }
+
+        mutating func popLoopPos(){
+            loopPos.popLast()
+        }
+
+        mutating func getLoopPos(_ idx: Int) -> Int{
+            return loopPos[idx].loopBeginPos
+        }
+
+        // if we insert one label into code, then the after record index move the same length
+        mutating func updateLoopPos(_ startIndex: Int, _ len: Int){
+            if(startIndex <= loopPos.count - 1){
+                for i in startIndex...loopPos.count - 1 {
+                    loopPos[i].loopBeginPos += len
+                }
+            }
+        }
+
+        mutating func getLabelExist(_ idx: Int) -> Bool{
+            return loopPos[idx].exist
+        }
+
+        mutating func setLabelExist(_ idx: Int){
+            loopPos[idx].exist = true
+        }
+
+        mutating func clearLoopPos(){
+            loopPos = []
+        }
+
+        mutating func insertLabel(_ pos: Int, _ content: String){
+            writer.insert(pos, content)
         }
 
         /// Emit a (potentially multi-line) comment.

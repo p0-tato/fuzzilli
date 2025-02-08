@@ -713,6 +713,12 @@ public class FuzzILLifter: Lifter {
         case .loopContinue:
             w.emit("Continue")
 
+        case .loopBreakNested(let op):
+            w.emit("LoopBreakNested \(op.depth)")
+
+        case .loopContinueNested(let op):
+            w.emit("LoopContinueNested \(op.depth)")
+
         case .beginTry:
             w.emit("BeginTry")
             w.increaseIndentionLevel()

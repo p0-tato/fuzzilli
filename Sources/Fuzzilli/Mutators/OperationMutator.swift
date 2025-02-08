@@ -636,6 +636,10 @@ public class OperationMutator: BaseInstructionMutator {
             parts.append(b.randomString())
             inputs.append(b.randomVariable())
             newOp = CreateTemplateString(parts: parts)
+        case .loopBreakNested(let op):
+            newOp = LoopBreakNested(Int.random(in: 0...10))
+        case .loopContinueNested(let op):
+            newOp = LoopContinueNested(Int.random(in: 0...10))
         default:
             fatalError("Unhandled Operation: \(type(of: instr.op))")
         }

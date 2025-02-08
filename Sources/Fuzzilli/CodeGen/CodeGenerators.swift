@@ -1460,6 +1460,14 @@ public let CodeGenerators: [CodeGenerator] = [
         b.loopBreak()
     },
 
+    CodeGenerator("LoopLabelBreakGenerator", inContext: .loop) { b in
+        b.loopBreakNested(Int.random(in: 0...10))
+    },
+
+    CodeGenerator("LoopLabelContinueGenerator", inContext: .loop) { b in
+        b.loopContinueNested(Int.random(in: 0...10))
+    },
+
     CodeGenerator("ContinueGenerator", inContext: .loop) { b in
         assert(b.context.contains(.loop))
         b.loopContinue()
